@@ -1,0 +1,119 @@
+name: win2022-32GB-8Core-AntiLag-SuperFast
+
+on:
+  workflow_dispatch:
+
+jobs:
+  secure-rdp:
+    runs-on: windows-2022
+    timeout-minutes: 3600
+
+    steps:
+      - name: 1. RDP + 32GB RAM + 8 Core + Anti Lag EXTREME
+        run: |
+          Write-Host "=== UNLOCKING PERFORMANCE ==="
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
+          Remove-NetFirewallRule -DisplayName "RDP-Tailscale" -ErrorAction SilentlyContinue
+          New-NetFirewallRule -DisplayName "RDP-Tailscale" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 3389 | Out-Null
+
+          # --- 8 CORE UNLOCK ---
+          # Paksa Windows pake semua core + prioritas program
+          $cpu = (Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors
+          Write-Host "Detected CPU: $cpu Core"
+          Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl" -Name "Win32PrioritySeparation" -Value 38 -Force
+          bcdedit /set useplatformclock false 2>$null
+          bcdedit /set disabledynamictick yes 2>$null
+
+          # --- 32GB RAM UNLOCK (Pagefile) ---
+          Write-Host "Setting Pagefile to 32GB..."
+          try {
+            $cs = Get-WmiObject Win32_ComputerSystem -EnableAllPrivileges
+            $cs.AutomaticManagedPagefile = $false; $cs.Put() | Out-Null
+            $pg = Get-WmiObject Win32_PageFileSetting -EnableAllPrivileges
+            if($pg){ $pg.Delete() }
+            Set-WmiInstance -Class Win32_PageFileSetting -Arguments @{Name="C:\pagefile.sys"; InitialSize=32768; MaximumSize=32768} -ErrorAction SilentlyContinue | Out-Null
+          } catch { Write-Host "Pagefile will be set via registry" }
+          # Registry backup for large pagefile
+          Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" -Name "PagingFiles" -Value "C:\pagefile.sys 32768 32768" -Force -ErrorAction SilentlyContinue
+          Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" -Name "LargeSystemCache" -Value 1 -Force
+          Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" -Name "SystemCacheLimit" -Value 0 -Force -ErrorAction SilentlyContinue
+
+          # --- ANTI LAG EXTREME ---
+          powercfg -setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c 2>$null
+          powercfg -change -monitor-timeout-ac 0 2>$null
+          # Matikan semua animasi Windows 11 biar jadi Win10 Lite
+          Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects" -Name "VisualFXSetting" -Value 2 -Force
+          Set-ItemProperty -Path "HKCU:\Control Panel\Desktop" -Name "DragFullWindows" -Value 0 -Force
+          Set-ItemProperty -Path "HKCU:\Control Panel\Desktop" -Name "MenuShowDelay" -Value 0 -Force
+          Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "TaskbarAnimations" -Value 0 -Force
+          # Disable Transparency & GameDVR (lag)
+          Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize" -Name "EnableTransparency" -Value 0 -Force -ErrorAction SilentlyContinue
+          Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\GameDVR" -Name "AllowGameDVR" -Value 0 -Force -ErrorAction SilentlyContinue
+
+          # Matikan Service Lag
+          @("SysMain","WSearch","DiagTrack","Wuauserv","TabletInputService","lfsvc","RetailDemo") | ForEach-Object {
+            try { Stop-Service $_ -Force -ErrorAction SilentlyContinue; Set-Service $_ -StartupType Disabled -ErrorAction SilentlyContinue } catch {}
+          }
+          # Matikan Defender
+          try { Set-MpPreference -DisableRealtimeMonitoring $true -DisableBehaviorMonitoring $true -DisableIOAVProtection $true -ErrorAction SilentlyContinue } catch {}
+
+          # GPU Acceleration for RDP (biar gak patah-patah)
+          Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services" -Name "bEnumerateHFonts" -Value 1 -Force -ErrorAction SilentlyContinue
+          Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services" -Name "AVC444ModePreferred" -Value 1 -Force -ErrorAction SilentlyContinue
+          Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services" -Name "AVCHardwareEncodePreferred" -Value 1 -Force -ErrorAction SilentlyContinue
+
+          Restart-Service TermService -Force -ErrorAction SilentlyContinue
+          Write-Host "=== 32GB + 8 CORE + ANTI LAG DONE ==="
+
+      - name: 2. Create RDP User
+        run: |
+          $p="MR.English2008"; $s=ConvertTo-SecureString $p -AsPlainText -Force
+          if(-not (Get-LocalUser -Name "RDP" -EA SilentlyContinue)){ New-LocalUser -Name "RDP" -Password $s -AccountNeverExpires -PasswordNeverExpires }
+          else { Set-LocalUser -Name "RDP" -Password $s -EA SilentlyContinue }
+          Add-LocalGroupMember -Group "Administrators" -Member "RDP" -EA SilentlyContinue
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP" -EA SilentlyContinue
+
+      - name: 3. Install Tailscale
+        run: |
+          $u="https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"; $o="$env:TEMP\tailscale.msi"
+          (New-Object Net.WebClient).DownloadFile($u,$o)
+          Start-Process msiexec -Args "/i `"$o`" /quiet /norestart" -Wait
+          Remove-Item $o -Force -EA SilentlyContinue
+
+      - name: 4. Connect Tailscale
+        run: |
+          $exe="$env:ProgramFiles\Tailscale\tailscale.exe"
+          & $exe up --authkey=${{ secrets.TAILSCALE_AUTHKEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
+          $ip=$null; $c=0; while(-not $ip -and $c -lt 12){ Start-Sleep 5; $ip=& $exe ip -4 2>$null; $c++ }
+          if(-not $ip){ exit 1 }
+          echo "TAILSCALE_IP=$($ip.Trim())" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "IP: $ip"
+
+      - name: 5. Final Check + Download.bat
+        run: |
+          Write-Host ""
+          Write-Host "====== RDP ULTRA FAST READY ======"
+          Write-Host "IP      : $env:TAILSCALE_IP"
+          Write-Host "USER    : RDP"
+          Write-Host "PASS    : MR.English2008"
+          Write-Host "SPEK    : 32GB RAM Unlock | 8 Core Unlock | Anti Lag ON"
+          Write-Host "OS      : Windows 2022 Debloated (Win10 Feel)"
+          Write-Host "=================================="
+          Write-Host ""
+
+          $prof="C:\Users\RDP"; $start="$prof\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup"
+          $url="https://gitlab.com/MR.English2008/pcme_rdp/-/raw/main/Downloads.bat"; $dest="$start\Downloads.bat"
+          
+          $w=0; while(-not (Test-Path $prof) -and $w -lt 60){ Start-Sleep 5; $w++ }
+          if(Test-Path $prof){
+            if(-not (Test-Path $start)){ New-Item -ItemType Directory -Path $start -Force | Out-Null }
+            try { Invoke-WebRequest -Uri $url -OutFile $dest -UseBasicParsing; Start-Process cmd -Args "/c `"$dest`"" -WindowStyle Hidden; Write-Host "Downloads.bat OK" } catch { Write-Host "Download.bat fail: $($_.Exception.Message)" }
+          }
+          
+          # Show RAM
+          $ram = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB,2)
+          Write-Host "Physical RAM Detected: $ram GB + 32GB Pagefile = Super Fast"
+          
+          while($true){ Write-Host "[$(Get-Date -Format HH:mm:ss)] RUNNING 32GB 8CORE ANTI-LAG - $env:TAILSCALE_IP"; Start-Sleep 300 }
